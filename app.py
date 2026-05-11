@@ -3,6 +3,7 @@ import json
 import os
 import logging
 import uuid
+import base64
 import httpx
 import asyncio
 from quart import (
@@ -14,6 +15,7 @@ from quart import (
     send_from_directory,
     render_template,
     current_app,
+    Response,
 )
 
 from openai import AsyncAzureOpenAI
@@ -45,7 +47,27 @@ def create_app():
     app = Quart(__name__)
     app.register_blueprint(bp)
     app.config["TEMPLATES_AUTO_RELOAD"] = True
-    
+
+    _app_password = os.environ.get("APP_PASSWORD", "")
+
+    @app.before_request
+    async def require_password():
+        if not _app_password:
+            return
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Basic "):
+            try:
+                _, password = base64.b64decode(auth[6:]).decode().split(":", 1)
+                if password == _app_password:
+                    return
+            except Exception:
+                pass
+        return Response(
+            "Authentication required",
+            401,
+            {"WWW-Authenticate": 'Basic realm="ChatMAC"'},
+        )
+
     @app.before_serving
     async def init():
         try:
