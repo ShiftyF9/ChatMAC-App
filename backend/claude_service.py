@@ -69,8 +69,8 @@ def _run_search(client, query: str, top_k: int, semantic: bool, semantic_config:
     """Run search synchronously — SearchClient is sync in azure-search-documents."""
     kwargs = {
         "search_text": query,
-        "select": ["content", "metadata_storage_name", "metadata_storage_path", "document_date"],
         "top": top_k,
+        "select": ["content", "title", "filepath", "document_date"],
     }
     if semantic:
         kwargs["query_type"] = "semantic"
@@ -78,32 +78,45 @@ def _run_search(client, query: str, top_k: int, semantic: bool, semantic_config:
     return list(client.search(**kwargs))
 
 
+def _extract_result(r: dict) -> tuple:
+    """Extract (name, date_str, content) from a search result."""
+    content = (r.get("content") or "").strip()
+
+    name = (r.get("title") or r.get("filepath") or "Unknown")
+    if isinstance(name, str):
+        name = name.replace(".txt", "").rsplit("/", 1)[-1]  # strip path prefix if filepath used
+
+    doc_date = r.get("document_date")
+    try:
+        date_str = datetime.fromisoformat(str(doc_date)).strftime("%B %d, %Y") if doc_date else "Unknown date"
+    except Exception:
+        date_str = str(doc_date) if doc_date else "Unknown date"
+
+    return name, date_str, content
+
+
 async def _execute_search(query: str) -> str:
     try:
         client = _get_search()
         top_k = int(os.environ.get("AZURE_SEARCH_TOP_K", "5"))
         semantic_config = os.environ.get("AZURE_SEARCH_SEMANTIC_SEARCH_CONFIG", "default")
+        loop = asyncio.get_running_loop()
 
-        # Try semantic first, fall back to simple search
         try:
-            raw = await asyncio.get_running_loop().run_in_executor(
+            raw = await loop.run_in_executor(
                 None, lambda: _run_search(client, query, top_k, True, semantic_config)
             )
         except Exception as sem_err:
             logging.warning("Semantic search failed (%s), falling back to simple search", sem_err)
-            raw = await asyncio.get_running_loop().run_in_executor(
+            raw = await loop.run_in_executor(
                 None, lambda: _run_search(client, query, top_k, False, semantic_config)
             )
 
         snippets = []
         for r in raw:
-            doc_date = r.get("document_date")
-            try:
-                date_str = datetime.fromisoformat(str(doc_date)).strftime("%B %d, %Y") if doc_date else "Unknown date"
-            except Exception:
-                date_str = str(doc_date) if doc_date else "Unknown date"
-            name = (r.get("metadata_storage_name") or "Unknown").replace(".txt", "")
-            content = (r.get("content") or "").strip()
+            name, date_str, content = _extract_result(r)
+            if not content:
+                continue
             snippets.append(f"[Source: {name} | Date: {date_str}]\n{content}")
 
         if not snippets:
