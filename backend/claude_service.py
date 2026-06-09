@@ -1,8 +1,8 @@
+import asyncio
 import os
 import time
 import uuid
 import logging
-import json
 from datetime import datetime
 
 import anthropic
@@ -80,20 +80,18 @@ def _run_search(client, query: str, top_k: int, semantic: bool, semantic_config:
 
 async def _execute_search(query: str) -> str:
     try:
-        import asyncio
         client = _get_search()
         top_k = int(os.environ.get("AZURE_SEARCH_TOP_K", "5"))
         semantic_config = os.environ.get("AZURE_SEARCH_SEMANTIC_SEARCH_CONFIG", "default")
 
         # Try semantic first, fall back to simple search
-        loop = asyncio.get_event_loop()
         try:
-            raw = await loop.run_in_executor(
+            raw = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: _run_search(client, query, top_k, True, semantic_config)
             )
         except Exception as sem_err:
             logging.warning("Semantic search failed (%s), falling back to simple search", sem_err)
-            raw = await loop.run_in_executor(
+            raw = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: _run_search(client, query, top_k, False, semantic_config)
             )
 
