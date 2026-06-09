@@ -275,8 +275,8 @@ async def generate_title(messages: list) -> str:
         return "New conversation"
 
 
-async def generate_email(purpose: str, details: str, tone: str) -> str:
-    """Generate an email draft for dojo communications."""
+async def generate_email(details: str, tone: str, original_email: str = "") -> str:
+    """Generate an email draft, optionally as a reply, using archive context for tone/substance."""
     client = _get_claude()
     today = _today_str()
 
@@ -286,16 +286,36 @@ async def generate_email(purpose: str, details: str, tone: str) -> str:
         "brief": "brief and direct — minimal prose, essential information only",
     }.get(tone, "warm but not effusive")
 
+    # Search the archive for relevant context
+    context_str = ""
+    try:
+        context = await _execute_search(details[:300])
+        if context and "No relevant documents" not in context and "Search failed" not in context:
+            context_str = (
+                "\n\nFor reference, here are relevant communications from the dojo archive "
+                "that may inform the tone, content, or context of your draft:\n\n" + context
+            )
+    except Exception:
+        pass  # Context is best-effort; proceed without it
+
+    if original_email:
+        task = (
+            f"Write a reply to the following email on behalf of Midwest Aikido Center.\n\n"
+            f"--- ORIGINAL EMAIL ---\n{original_email}\n--- END ORIGINAL EMAIL ---\n\n"
+            f"Instructions: {details}"
+        )
+    else:
+        task = f"Write an email for Midwest Aikido Center.\n\nDetails: {details}"
+
     prompt = (
         f"Today is {today}.\n\n"
-        f"Write an email for Midwest Aikido Center with the following details.\n\n"
-        f"Purpose: {purpose}\n"
-        f"Key details: {details}\n"
+        f"{task}\n\n"
         f"Tone: {tone_guidance}\n\n"
         "Format as plain text suitable for email — no markdown headers. "
         "Include a subject line as the first line prefixed with 'Subject: ', "
         "then a blank line, then the email body. "
         "Do not add a signature line."
+        f"{context_str}"
     )
 
     system = (

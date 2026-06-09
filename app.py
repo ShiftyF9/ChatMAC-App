@@ -186,13 +186,13 @@ async def email_generate():
     if not request.is_json:
         return jsonify({"error": "request must be json"}), 415
     body = await request.get_json()
-    purpose = body.get("purpose", "").strip()
     details = body.get("details", "").strip()
     tone = body.get("tone", "warm")
-    if not purpose:
-        return jsonify({"error": "purpose is required"}), 400
+    original_email = body.get("original_email", "").strip()
+    if not details:
+        return jsonify({"error": "details is required"}), 400
     try:
-        text = await generate_email(purpose, details, tone)
+        text = await generate_email(details, tone, original_email)
         return jsonify({"text": text}), 200
     except Exception as e:
         logging.exception("Exception in /email/generate")

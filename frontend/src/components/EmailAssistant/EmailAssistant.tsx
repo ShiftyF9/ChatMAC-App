@@ -8,18 +8,9 @@ const TONE_OPTIONS: IDropdownOption[] = [
   { key: 'brief', text: 'Brief' },
 ]
 
-const PURPOSE_OPTIONS: IDropdownOption[] = [
-  { key: 'seminar announcement', text: 'Seminar Announcement' },
-  { key: 'event invitation', text: 'Event Invitation' },
-  { key: 'schedule change', text: 'Schedule Change' },
-  { key: 'member communication', text: 'Member Communication' },
-  { key: 'board communication', text: 'Board Communication' },
-  { key: 'general announcement', text: 'General Announcement' },
-]
-
 export const EmailAssistant = () => {
-  const [purpose, setPurpose] = useState<string>('seminar announcement')
   const [details, setDetails] = useState<string>('')
+  const [originalEmail, setOriginalEmail] = useState<string>('')
   const [tone, setTone] = useState<string>('warm')
   const [result, setResult] = useState<string>('')
   const [loading, setLoading] = useState<boolean>(false)
@@ -37,7 +28,11 @@ export const EmailAssistant = () => {
       const res = await fetch('/email/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ purpose, details: details.trim(), tone }),
+        body: JSON.stringify({
+          details: details.trim(),
+          tone,
+          original_email: originalEmail.trim(),
+        }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
@@ -57,6 +52,7 @@ export const EmailAssistant = () => {
 
   const handleClear = () => {
     setDetails('')
+    setOriginalEmail('')
     setResult('')
     setError('')
   }
@@ -67,40 +63,39 @@ export const EmailAssistant = () => {
         <div>
           <h2 className={styles.title}>Email Assistant</h2>
           <p className={styles.subtitle}>
-            Describe what you need to communicate, and get a polished draft for the dojo community.
+            Describe what you need to communicate and get a polished draft. Paste the original message below if you're writing a reply.
           </p>
         </div>
 
-        <Stack horizontal tokens={{ childrenGap: 16 }} wrap>
-          <Stack.Item grow={1} styles={{ root: { minWidth: 220 } }}>
-            <Dropdown
-              label="Type"
-              selectedKey={purpose}
-              options={PURPOSE_OPTIONS}
-              onChange={(_, opt) => opt && setPurpose(opt.key as string)}
-            />
-          </Stack.Item>
-          <Stack.Item grow={1} styles={{ root: { minWidth: 160 } }}>
-            <Dropdown
-              label="Tone"
-              selectedKey={tone}
-              options={TONE_OPTIONS}
-              onChange={(_, opt) => opt && setTone(opt.key as string)}
-            />
-          </Stack.Item>
-        </Stack>
-
         <TextField
-          label="Key details"
+          label="Original email (optional — paste here if replying)"
           multiline
-          rows={5}
-          value={details}
-          onChange={(_, val) => setDetails(val || '')}
-          placeholder={
-            'Describe what to include — instructor name, dates, location, cost, registration link, any specific messaging...'
-          }
+          rows={4}
+          value={originalEmail}
+          onChange={(_, val) => setOriginalEmail(val || '')}
+          placeholder="Paste the email you're responding to..."
           disabled={loading}
         />
+
+        <TextField
+          label="Details"
+          multiline
+          rows={4}
+          value={details}
+          onChange={(_, val) => setDetails(val || '')}
+          placeholder="Describe what to communicate — key points, any specific instructions, names, dates, links..."
+          disabled={loading}
+          required
+        />
+
+        <Stack.Item styles={{ root: { maxWidth: 180 } }}>
+          <Dropdown
+            label="Tone"
+            selectedKey={tone}
+            options={TONE_OPTIONS}
+            onChange={(_, opt) => opt && setTone(opt.key as string)}
+          />
+        </Stack.Item>
 
         <Stack horizontal tokens={{ childrenGap: 8 }}>
           <PrimaryButton
