@@ -100,6 +100,34 @@
   color: #242424;
 }
 
+.navLinks {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 24px;
+}
+
+.navLink {
+  font-size: 14px;
+  font-weight: 500;
+  padding: 4px 12px;
+  border-radius: 4px;
+  text-decoration: none;
+  color: #424242;
+  transition: background 0.15s;
+}
+
+.navLink:hover {
+  background: #d2e8de;
+  text-decoration: none;
+}
+
+.navLinkActive {
+  background: #c2d9cf;
+  color: #0b6a3a;
+  font-weight: 600;
+}
+
 @media (max-width: 480px) {
   .headerTitleContainer {
     margin-left: 4px;

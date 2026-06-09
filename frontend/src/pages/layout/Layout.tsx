@@ -1,5 +1,5 @@
 import { useContext, useEffect, useState } from 'react'
-import { Link, Outlet } from 'react-router-dom'
+import { Link, NavLink, Outlet } from 'react-router-dom'
 import { Dialog, Stack, TextField } from '@fluentui/react'
 import { CopyRegular } from '@fluentui/react-icons'
 
@@ -82,6 +82,23 @@ const Layout = () => {
             <Link to="/" className={styles.headerTitleContainer}>
               <h1 className={styles.headerTitle}>{ui?.title}</h1>
             </Link>
+            <nav className={styles.navLinks}>
+              <NavLink
+                to="/"
+                end
+                className={({ isActive }) =>
+                  `${styles.navLink}${isActive ? ` ${styles.navLinkActive}` : ''}`
+                }>
+                Chat
+              </NavLink>
+              <NavLink
+                to="/email"
+                className={({ isActive }) =>
+                  `${styles.navLink}${isActive ? ` ${styles.navLinkActive}` : ''}`
+                }>
+                Email
+              </NavLink>
+            </nav>
           </Stack>
           <Stack horizontal tokens={{ childrenGap: 4 }} className={styles.shareButtonContainer}>
             {appStateContext?.state.isCosmosDBAvailable?.status !== CosmosDBStatus.NotConfigured && ui?.show_chat_history_button !== false && (

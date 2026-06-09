@@ -7,6 +7,7 @@ import Chat from './pages/chat/Chat'
 import Layout from './pages/layout/Layout'
 import NoPage from './pages/NoPage'
 import { AppStateProvider } from './state/AppProvider'
+import { EmailAssistant } from './components/EmailAssistant'
 
 import './index.css'
 
@@ -19,6 +20,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Layout />}>
             <Route index element={<Chat />} />
+            <Route path="email" element={<EmailAssistant />} />
             <Route path="*" element={<NoPage />} />
           </Route>
         </Routes>
