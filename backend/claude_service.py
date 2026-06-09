@@ -7,7 +7,6 @@ from datetime import datetime
 
 import anthropic
 from azure.search.documents import SearchClient
-from azure.search.documents.models import QueryType
 from azure.core.credentials import AzureKeyCredential
 
 MODEL = "claude-sonnet-4-6"
@@ -66,27 +65,45 @@ def _get_search():
     return _search
 
 
+def _run_search(client, query: str, top_k: int, semantic: bool, semantic_config: str):
+    """Run search synchronously — SearchClient is sync in azure-search-documents."""
+    kwargs = {
+        "search_text": query,
+        "select": ["content", "metadata_storage_name", "metadata_storage_path", "document_date"],
+        "top": top_k,
+    }
+    if semantic:
+        kwargs["query_type"] = "semantic"
+        kwargs["semantic_configuration_name"] = semantic_config
+    return list(client.search(**kwargs))
+
+
 async def _execute_search(query: str) -> str:
     try:
+        import asyncio
         client = _get_search()
         top_k = int(os.environ.get("AZURE_SEARCH_TOP_K", "5"))
         semantic_config = os.environ.get("AZURE_SEARCH_SEMANTIC_SEARCH_CONFIG", "default")
 
-        results = client.search(
-            search_text=query,
-            query_type=QueryType.SEMANTIC,
-            semantic_configuration_name=semantic_config,
-            select=["content", "metadata_storage_name", "metadata_storage_path", "document_date"],
-            top=top_k,
-        )
+        # Try semantic first, fall back to simple search
+        loop = asyncio.get_event_loop()
+        try:
+            raw = await loop.run_in_executor(
+                None, lambda: _run_search(client, query, top_k, True, semantic_config)
+            )
+        except Exception as sem_err:
+            logging.warning("Semantic search failed (%s), falling back to simple search", sem_err)
+            raw = await loop.run_in_executor(
+                None, lambda: _run_search(client, query, top_k, False, semantic_config)
+            )
 
         snippets = []
-        for r in results:
+        for r in raw:
             doc_date = r.get("document_date")
-            date_str = (
-                datetime.fromisoformat(str(doc_date)).strftime("%B %d, %Y")
-                if doc_date else "Unknown date"
-            )
+            try:
+                date_str = datetime.fromisoformat(str(doc_date)).strftime("%B %d, %Y") if doc_date else "Unknown date"
+            except Exception:
+                date_str = str(doc_date) if doc_date else "Unknown date"
             name = (r.get("metadata_storage_name") or "Unknown").replace(".txt", "")
             content = (r.get("content") or "").strip()
             snippets.append(f"[Source: {name} | Date: {date_str}]\n{content}")
@@ -97,7 +114,7 @@ async def _execute_search(query: str) -> str:
         return "\n\n---\n\n".join(snippets)
 
     except Exception as e:
-        logging.exception("Search error")
+        logging.exception("Search error: %s", e)
         return f"Search failed: {str(e)}"
 
 
