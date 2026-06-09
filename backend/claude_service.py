@@ -201,49 +201,37 @@ async def stream_response(messages: list, history_metadata: dict):
         last_user["content"] = f"[Today is {today}]\n\n{last_user['content']}"
 
     try:
-        # First call: non-streaming, allow tool use
-        first_response = await client.messages.create(
-            model=MODEL,
-            max_tokens=4096,
-            system=system_blocks,
-            messages=claude_messages,
-            tools=[SEARCH_TOOL],
-        )
-
-        if first_response.stop_reason == "tool_use":
-            tool_block = next(
-                (b for b in first_response.content if b.type == "tool_use"), None
+        # Allow up to 3 searches before streaming the final answer
+        for _ in range(3):
+            response = await client.messages.create(
+                model=MODEL,
+                max_tokens=4096,
+                system=system_blocks,
+                messages=claude_messages,
+                tools=[SEARCH_TOOL],
             )
-            if tool_block:
-                search_results = await _execute_search(tool_block.input.get("query", ""))
-                claude_messages.append({"role": "assistant", "content": first_response.content})
-                claude_messages.append({
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": tool_block.id,
-                            "content": search_results,
-                        }
-                    ],
-                })
-        elif first_response.stop_reason == "end_turn":
-            # Claude answered without needing search — stream the existing text
-            text = next(
-                (b.text for b in first_response.content if hasattr(b, "text")), ""
-            )
-            if text:
-                # Yield in small chunks to keep streaming feel
-                chunk_size = 4
-                words = text.split(" ")
-                for i in range(0, len(words), chunk_size):
-                    chunk = " ".join(words[i:i + chunk_size])
-                    if i + chunk_size < len(words):
-                        chunk += " "
-                    yield _make_chunk(msg_id, chunk, history_metadata)
-            return
 
-        # Second call: stream the final response (no tools to avoid re-searching)
+            if response.stop_reason != "tool_use":
+                break
+
+            tool_block = next((b for b in response.content if b.type == "tool_use"), None)
+            if not tool_block:
+                break
+
+            search_results = await _execute_search(tool_block.input.get("query", ""))
+            claude_messages.append({"role": "assistant", "content": response.content})
+            claude_messages.append({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_block.id,
+                        "content": search_results,
+                    }
+                ],
+            })
+
+        # Stream the final response (no tools — search phase is done)
         async with client.messages.stream(
             model=MODEL,
             max_tokens=4096,
