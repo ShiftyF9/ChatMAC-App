@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import time
 import uuid
 import logging
@@ -10,6 +11,8 @@ from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
 
 MODEL = "claude-sonnet-4-6"
+TITLE_MODEL = "claude-haiku-4-5"
+MAX_SEARCH_ROUNDS = 3
 
 SYSTEM_PROMPT = """You are a knowledgeable assistant for Midwest Aikido Center (MAC), a traditional Aikido dojo in Chicago, IL. You help board members, instructors, and staff find information from dojo records and serve as a general resource on Aikido.
 
@@ -28,9 +31,10 @@ SEARCH_TOOL = {
     "name": "search_documents",
     "description": (
         "Search the Midwest Aikido Center document archive — emails, board meeting minutes, "
-        "bylaws, member records, and calendar events — for relevant information. "
+        "bylaws, member records, calendar events, and website content — for relevant information. "
         "Call this whenever the user asks about dojo policies, events, members, financials, "
-        "communications, or any specific factual question about MAC."
+        "communications, or any specific factual question about MAC. "
+        "For multi-part questions, make several targeted searches rather than one broad one."
     ),
     "input_schema": {
         "type": "object",
@@ -38,6 +42,34 @@ SEARCH_TOOL = {
             "query": {
                 "type": "string",
                 "description": "A concise, targeted search query"
+            },
+            "source_type": {
+                "type": "string",
+                "enum": ["email", "calendar", "member", "web"],
+                "description": (
+                    "Restrict results to one source: 'calendar' for events and schedules, "
+                    "'member' for member profiles, attendance, and dues, 'web' for website "
+                    "content and current official policies, 'email' for board emails, meeting "
+                    "minutes, and attachments. Omit to search all sources."
+                )
+            },
+            "date_from": {
+                "type": "string",
+                "description": (
+                    "Only return documents dated on or after this date, format YYYY-MM-DD. "
+                    "Use with today's date for questions about upcoming events."
+                )
+            },
+            "date_to": {
+                "type": "string",
+                "description": "Only return documents dated on or before this date, format YYYY-MM-DD."
+            },
+            "newest_first": {
+                "type": "boolean",
+                "description": (
+                    "Sort results by document date, newest first, instead of by relevance. "
+                    "Use for 'most recent' or 'latest' questions."
+                )
             }
         },
         "required": ["query"]
@@ -66,14 +98,34 @@ def _get_search():
     return _search
 
 
-def _run_search(client, query: str, top_k: int, semantic: bool, semantic_config: str):
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _build_filter(source_type: str = "", date_from: str = "", date_to: str = "") -> str:
+    parts = []
+    if source_type in ("email", "calendar", "member", "web"):
+        parts.append(f"source_type eq '{source_type}'")
+    if date_from and _DATE_RE.match(date_from):
+        parts.append(f"document_date ge {date_from}T00:00:00Z")
+    if date_to and _DATE_RE.match(date_to):
+        parts.append(f"document_date le {date_to}T23:59:59Z")
+    return " and ".join(parts)
+
+
+def _run_search(client, query: str, top_k: int, semantic: bool, semantic_config: str,
+                filter_expr: str = "", newest_first: bool = False):
     """Run search synchronously — SearchClient is sync in azure-search-documents."""
     kwargs = {
         "search_text": query,
         "top": top_k,
         "select": ["content", "title", "filepath", "document_date"],
     }
-    if semantic:
+    if filter_expr:
+        kwargs["filter"] = filter_expr
+    if newest_first:
+        # $orderby is not supported with semantic ranking, so sorted searches run in simple mode
+        kwargs["order_by"] = ["document_date desc"]
+    elif semantic:
         kwargs["query_type"] = "semantic"
         kwargs["semantic_configuration_name"] = semantic_config
     return list(client.search(**kwargs))
@@ -96,21 +148,26 @@ def _extract_result(r: dict) -> tuple:
     return name, date_str, content
 
 
-async def _execute_search(query: str) -> str:
+async def _execute_search(query: str, source_type: str = "", date_from: str = "",
+                          date_to: str = "", newest_first: bool = False) -> tuple:
+    """Returns (result_text, is_error)."""
     try:
         client = _get_search()
         top_k = int(os.environ.get("AZURE_SEARCH_TOP_K", "5"))
         semantic_config = os.environ.get("AZURE_SEARCH_SEMANTIC_SEARCH_CONFIG", "default")
+        filter_expr = _build_filter(source_type, date_from, date_to)
         loop = asyncio.get_running_loop()
 
         try:
             raw = await loop.run_in_executor(
-                None, lambda: _run_search(client, query, top_k, True, semantic_config)
+                None, lambda: _run_search(client, query, top_k, True, semantic_config,
+                                          filter_expr, newest_first)
             )
         except Exception as sem_err:
             logging.warning("Semantic search failed (%s), falling back to simple search", sem_err)
             raw = await loop.run_in_executor(
-                None, lambda: _run_search(client, query, top_k, False, semantic_config)
+                None, lambda: _run_search(client, query, top_k, False, semantic_config,
+                                          filter_expr, newest_first)
             )
 
         snippets = []
@@ -118,16 +175,16 @@ async def _execute_search(query: str) -> str:
             name, date_str, content = _extract_result(r)
             if not content:
                 continue
-            snippets.append(f"[Source: {name} | Date: {date_str}]\n{content}")
+            snippets.append(f"[Source: {name} | Date: {date_str}]\n{content[:2000]}")
 
         if not snippets:
-            return "No relevant documents found for that query."
+            return "No relevant documents found for that query.", False
 
-        return "\n\n---\n\n".join(snippets)
+        return "\n\n---\n\n".join(snippets), False
 
     except Exception as e:
         logging.exception("Search error: %s", e)
-        return f"Search failed: {str(e)}"
+        return f"Search failed: {str(e)}", True
 
 
 def _convert_messages(messages: list) -> list:
@@ -201,45 +258,60 @@ async def stream_response(messages: list, history_metadata: dict):
         last_user["content"] = f"[Today is {today}]\n\n{last_user['content']}"
 
     try:
-        # Allow up to 3 searches before streaming the final answer
-        for _ in range(3):
-            response = await client.messages.create(
-                model=MODEL,
-                max_tokens=4096,
-                system=system_blocks,
-                messages=claude_messages,
-                tools=[SEARCH_TOOL],
-            )
+        # Single streaming loop: the same call both searches and answers, so the
+        # final answer is generated exactly once and text streams to the user
+        # during the search phase. Tools and system stay identical on every
+        # round to keep the prompt-cache prefix valid across rounds.
+        for round_idx in range(MAX_SEARCH_ROUNDS + 1):
+            kwargs = {
+                "model": MODEL,
+                "max_tokens": 8192,
+                "system": system_blocks,
+                "messages": claude_messages,
+                "tools": [SEARCH_TOOL],
+                "thinking": {"type": "adaptive"},
+            }
+            if round_idx == MAX_SEARCH_ROUNDS:
+                # Search budget exhausted — force an answer from what was retrieved
+                kwargs["tool_choice"] = {"type": "none"}
+
+            async with client.messages.stream(**kwargs) as stream:
+                async for text in stream.text_stream:
+                    yield _make_chunk(msg_id, text, history_metadata)
+                response = await stream.get_final_message()
 
             if response.stop_reason != "tool_use":
                 break
 
-            tool_block = next((b for b in response.content if b.type == "tool_use"), None)
-            if not tool_block:
+            tool_blocks = [b for b in response.content if b.type == "tool_use"]
+            if not tool_blocks:
                 break
 
-            search_results = await _execute_search(tool_block.input.get("query", ""))
-            claude_messages.append({"role": "assistant", "content": response.content})
-            claude_messages.append({
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tool_block.id,
-                        "content": search_results,
-                    }
-                ],
-            })
+            results = await asyncio.gather(*[
+                _execute_search(
+                    b.input.get("query", ""),
+                    b.input.get("source_type", ""),
+                    b.input.get("date_from", ""),
+                    b.input.get("date_to", ""),
+                    bool(b.input.get("newest_first", False)),
+                )
+                for b in tool_blocks
+            ])
 
-        # Stream the final response (no tools — search phase is done)
-        async with client.messages.stream(
-            model=MODEL,
-            max_tokens=4096,
-            system=system_blocks,
-            messages=claude_messages,
-        ) as stream:
-            async for text in stream.text_stream:
-                yield _make_chunk(msg_id, text, history_metadata)
+            tool_results = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": text,
+                    "is_error": is_error,
+                }
+                for block, (text, is_error) in zip(tool_blocks, results)
+            ]
+            # One breakpoint per round (3 max) + the system block = the 4-breakpoint API limit
+            tool_results[-1]["cache_control"] = {"type": "ephemeral"}
+
+            claude_messages.append({"role": "assistant", "content": response.content})
+            claude_messages.append({"role": "user", "content": tool_results})
 
     except Exception as e:
         logging.exception("Error in claude stream_response")
@@ -261,7 +333,7 @@ async def generate_title(messages: list) -> str:
 
     try:
         response = await client.messages.create(
-            model=MODEL,
+            model=TITLE_MODEL,
             max_tokens=32,
             messages=simple_messages,
         )
@@ -289,8 +361,8 @@ async def generate_email(details: str, tone: str, original_email: str = "") -> s
     # Search the archive for relevant context
     context_str = ""
     try:
-        context = await _execute_search(details[:300])
-        if context and "No relevant documents" not in context and "Search failed" not in context:
+        context, ctx_error = await _execute_search(details[:300])
+        if not ctx_error and context and "No relevant documents" not in context:
             context_str = (
                 "\n\nFor reference, here are relevant communications from the dojo archive "
                 "that may inform the tone, content, or context of your draft:\n\n" + context
