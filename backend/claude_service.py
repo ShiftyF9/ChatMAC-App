@@ -262,6 +262,7 @@ async def stream_response(messages: list, history_metadata: dict):
         # final answer is generated exactly once and text streams to the user
         # during the search phase. Tools and system stay identical on every
         # round to keep the prompt-cache prefix valid across rounds.
+        yielded_text = False
         for round_idx in range(MAX_SEARCH_ROUNDS + 1):
             kwargs = {
                 "model": MODEL,
@@ -275,8 +276,16 @@ async def stream_response(messages: list, history_metadata: dict):
                 # Search budget exhausted — force an answer from what was retrieved
                 kwargs["tool_choice"] = {"type": "none"}
 
+            first_in_round = True
             async with client.messages.stream(**kwargs) as stream:
                 async for text in stream.text_stream:
+                    # The frontend concatenates chunks directly, so text resuming
+                    # after a search round needs a paragraph break or it runs into
+                    # the pre-search preamble
+                    if first_in_round and yielded_text and not text.startswith(("\n", " ")):
+                        text = "\n\n" + text
+                    first_in_round = False
+                    yielded_text = True
                     yield _make_chunk(msg_id, text, history_metadata)
                 response = await stream.get_final_message()
 
