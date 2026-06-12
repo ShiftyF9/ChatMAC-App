@@ -8,6 +8,7 @@ from datetime import datetime
 
 import anthropic
 from azure.search.documents import SearchClient
+from azure.search.documents.models import VectorizableTextQuery
 from azure.core.credentials import AzureKeyCredential
 
 MODEL = "claude-sonnet-4-6"
@@ -114,7 +115,12 @@ def _build_filter(source_type: str = "", date_from: str = "", date_to: str = "")
 
 def _run_search(client, query: str, top_k: int, semantic: bool, semantic_config: str,
                 filter_expr: str = "", newest_first: bool = False):
-    """Run search synchronously — SearchClient is sync in azure-search-documents."""
+    """Run search synchronously — SearchClient is sync in azure-search-documents.
+
+    Default mode is hybrid (keyword + vector, RRF-fused) with semantic reranking.
+    `semantic=False` is the degraded fallback: pure keyword, no vector, so a
+    vectorizer or reranker outage can't take search down entirely.
+    """
     kwargs = {
         "search_text": query,
         "top": top_k,
@@ -123,11 +129,15 @@ def _run_search(client, query: str, top_k: int, semantic: bool, semantic_config:
     if filter_expr:
         kwargs["filter"] = filter_expr
     if newest_first:
-        # $orderby is not supported with semantic ranking, so sorted searches run in simple mode
+        # $orderby supports neither semantic ranking nor hybrid fusion,
+        # so sorted searches run as pure keyword queries
         kwargs["order_by"] = ["document_date desc"]
     elif semantic:
         kwargs["query_type"] = "semantic"
         kwargs["semantic_configuration_name"] = semantic_config
+        kwargs["vector_queries"] = [
+            VectorizableTextQuery(text=query, k_nearest_neighbors=50, fields="text_vector")
+        ]
     return list(client.search(**kwargs))
 
 
