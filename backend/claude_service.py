@@ -84,7 +84,12 @@ _search = None
 def _get_claude():
     global _claude
     if _claude is None:
-        _claude = anthropic.AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        # Explicit timeout so a stalled upstream connection errors out instead of
+        # hanging the request indefinitely (httpx read timeout resets per chunk,
+        # so this only trips on a genuine stall, not a long legitimate stream).
+        _claude = anthropic.AsyncAnthropic(
+            api_key=os.environ["ANTHROPIC_API_KEY"], timeout=120.0
+        )
     return _claude
 
 
@@ -125,6 +130,10 @@ def _run_search(client, query: str, top_k: int, semantic: bool, semantic_config:
         "search_text": query,
         "top": top_k,
         "select": ["content", "title", "filepath", "document_date"],
+        # Without these the underlying transport has no read timeout and a
+        # stalled Azure Search connection can hang the request indefinitely.
+        "connection_timeout": 10,
+        "read_timeout": 30,
     }
     if filter_expr:
         kwargs["filter"] = filter_expr
@@ -168,16 +177,25 @@ async def _execute_search(query: str, source_type: str = "", date_from: str = ""
         filter_expr = _build_filter(source_type, date_from, date_to)
         loop = asyncio.get_running_loop()
 
+        # wait_for as a backstop: connection_timeout/read_timeout bound the HTTP
+        # call itself, but this also bounds how long a stuck executor thread can
+        # block this request if that fails to fire for any reason.
         try:
-            raw = await loop.run_in_executor(
-                None, lambda: _run_search(client, query, top_k, True, semantic_config,
-                                          filter_expr, newest_first)
+            raw = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None, lambda: _run_search(client, query, top_k, True, semantic_config,
+                                              filter_expr, newest_first)
+                ),
+                timeout=45,
             )
         except Exception as sem_err:
             logging.warning("Semantic search failed (%s), falling back to simple search", sem_err)
-            raw = await loop.run_in_executor(
-                None, lambda: _run_search(client, query, top_k, False, semantic_config,
-                                          filter_expr, newest_first)
+            raw = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None, lambda: _run_search(client, query, top_k, False, semantic_config,
+                                              filter_expr, newest_first)
+                ),
+                timeout=45,
             )
 
         snippets = []
